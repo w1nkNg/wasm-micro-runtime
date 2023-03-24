@@ -2,74 +2,65 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 ##  Build docker image that consists of gcc, cmake, wasi-sdk & zephyr sdk
-FROM gcc:9.3.0 AS BASE
+FROM ubuntu:22.04
+ENV TMP_DIR=/tmp_for_building
 
-## set work directory
-WORKDIR /root/
-
-COPY resource /root/
-
-##  - download cmake with wget and set up
-# hadolint ignore=DL3008
-RUN wget --progress=dot:giga https://github.com/Kitware/CMake/releases/download/v3.21.1/cmake-3.21.1-linux-x86_64.tar.gz \
-    && tar -zxvf cmake-3.21.1-linux-x86_64.tar.gz \
-    && rm -f cmake-3.21.1-linux-x86_64.tar.gz \
-    && mv cmake-3.21.1-linux-x86_64 /opt/cmake \
-    && ln -s /opt/cmake/bin/cmake /bin/cmake \
-    && apt-get -y install make --no-install-recommends
-
+RUN mkdir ${TMP_DIR}
+COPY resource ${TMP_DIR}
+WORKDIR ${TMP_DIR}
 ##  set compilation environment for wamrc
 #    - wamr repo
 #    - cmake
 #    - wasi-sdk
 #    - wamr-sdk
 
+## cmake & make
+
+RUN apt-get update && \
+    apt-get install -y git python3 python3-pip wget cmake make ninja-build build-essential --no-install-recommends &&\
+    apt-get clean -y &&\
+    rm -rf /var/lib/apt/lists/*
+
 ##  - download wasi-sdk with wget and set up to /opt/wasi-sdk
-RUN wget --progress=dot:giga https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-19/wasi-sdk-19.0-linux.tar.gz \
-    && tar -zxvf wasi-sdk-*-linux.tar.gz \
-    && mv wasi-sdk-19.0 /opt/wasi-sdk/ \
-    && rm -f wasi-sdk-*-linux.tar.gz
+RUN wget --progress=dot:giga --no-check-certificate https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-19/wasi-sdk-19.0-linux.tar.gz && \
+    tar -zxvf wasi-sdk-*-linux.tar.gz && \
+    mv wasi-sdk-19.0 /opt/wasi-sdk/
+
+## Config git first
+
+RUN git config --global http.sslverify false && \
+    git config --global https.sslverify false
 
 ##  - clone wamr repo
-RUN git clone -b main --depth=1 https://github.com/bytecodealliance/wasm-micro-runtime.git
+RUN git clone -b main --depth=1 https://github.com/w1nkNg/wasm-micro-runtime.git
 
-WORKDIR /root/wasm-micro-runtime/wamr-compiler
-RUN ./build_llvm.sh \
-    && mkdir build
+WORKDIR ${TMP_DIR}/wasm-micro-runtime/wamr-compiler
+RUN pip3 install requests && \
+    ./build_llvm.sh && \
+    mkdir build
 
-WORKDIR /root/wasm-micro-runtime/wamr-compiler/build
-RUN cmake .. \
-    && make \
+WORKDIR ${TMP_DIR}/wasm-micro-runtime/wamr-compiler/build
+RUN cmake .. &&\
+    make &&\
     #  - copy the wamrc to /root
-    && cp /root/wasm-micro-runtime/wamr-compiler/build/wamrc /root/wamrc \
-    && mkdir -p /opt/wamr-sdk \
-    && cp -r /root/wasm-micro-runtime/wamr-sdk/app /opt/wamr-sdk/ \
-    && mv /root/wamr_toolchain.cmake /opt/wamr-sdk/app \
-    #  - remove the wamr repo to save the size
-    && rm -fr /root/wasm-micro-runtime
+     cp ${TMP_DIR}/wasm-micro-runtime/wamr-compiler/build/wamrc /usr/bin/wamrc && \
+     mkdir -p /opt/wamr-sdk && \
+     cp -r ${TMP_DIR}/wasm-micro-runtime/wamr-sdk/app /opt/wamr-sdk/ && \
+     mv ${TMP_DIR}/wamr_toolchain.cmake /opt/wamr-sdk/app
 
-# ## STAGE 2
-FROM ubuntu:20.04
 ENV HOME_DIR=/home/wasm-toolchain
 
-RUN mkdir -p /opt/wasi-sdk \
-    && mkdir -p /opt/cmake \
-    && mkdir -p /opt/wamr-sdk/app \
-    && mkdir -p /home/wasm-toolchain
+RUN mkdir -p ${HOME_DIR} &&\
+    mv ${TMP_DIR}/build_wasm.sh ${HOME_DIR}
 
 # COPY files from BASE image
-COPY --from=BASE /opt/cmake/ /opt/cmake/
-COPY --from=BASE /opt/wamr-sdk/app/ /opt/wamr-sdk/app/
-COPY --from=BASE /opt/wasi-sdk /opt/wasi-sdk/
-COPY --from=BASE /root/wamrc ${HOME_DIR}
-COPY --from=BASE /root/build_wasm.sh ${HOME_DIR}
+# COPY --from=BASE /opt/cmake/ /opt/cmake/
+# COPY --from=BASE /opt/wamr-sdk/app/ /opt/wamr-sdk/app/
+# COPY --from=BASE /opt/wasi-sdk /opt/wasi-sdk/
+# COPY --from=BASE /root/wamrc ${HOME_DIR}
+# COPY --from=BASE /root/build_wasm.sh ${HOME_DIR}
 
-RUN ln -s /opt/cmake/bin/cmake /usr/bin/cmake \
-    && ln -s ${HOME_DIR}/wamrc /usr/bin/wamrc
-
-# hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y make --no-install-recommends \
-    && apt-get clean -y \
-    && rm -rf /var/lib/apt/lists/*
+# RUN ln -s ${HOME_DIR}/wamrc /usr/bin/wamrc
+RUN rm -fr ${TMP_DIR}
 
 WORKDIR ${HOME_DIR}
